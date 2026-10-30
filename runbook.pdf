@@ -1,0 +1,107 @@
+
+Global Operations & Engineering Runbook
+
+
+Document Metadata
+
+• System/Application: Core Services Portal
+• Classification: Internal / Confidential
+• Version: 1.0.0
+• Last Updated: October 2026
+
+[RUN-01] Database Connection Pool Exhausted
+
+
+Symptoms & Error Alerts
+
+• Applications throwing FATAL: remaining connection slots are reserved for non-replication superuser connections
+• HTTP 500 errors across client applications.
+• High latency on database read/write actions.
+
+Underlying Cause
+
+The PostgreSQL database connection pool has hit its max limit because connection instances are not closing down after active API requests finish.
+
+Step-by-Step Resolution Path
+
+1. Log directly into the central monitoring cluster or proxy server.
+2. Run the command pg_activity or check active queries using the following SQL terminal execution:sql
+SELECT pid, query, state FROM pg_stat_activity WHERE state != 'idle';
+Use code with caution.
+3. Locate hanging connections that have been active for more than 5 minutes.
+4. Safely kill zombie connections by executing:sql
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state = 'idle' AND query_start < now() - interval '5 minutes';
+Use code with caution.
+5. If the connection pool fills up immediately again, increase the max connection limit temporarily in postgresql.conf and issue an app rollout restart.
+
+[RUN-02] API Gateway 504 Bad Gateway Error
+
+
+Symptoms & Error Alerts
+
+• Load balancer health checks failing.
+• Users receiving explicit HTTP 504 Gateway Timeout screens.
+• Nginx logs throwing upstream timed out (110: Connection timed out) while reading response header from upstream.
+
+Underlying Cause
+
+The front-facing Nginx or AWS ALB gateway is waiting for a response from the internal downstream microservice, but the backend service is stuck or deadlocked.
+
+Step-by-Step Resolution Path
+
+1. Identify which specific route is timing out by running an inspection on the Nginx access logs:bash
+tail -n 100 /var/log/nginx/access.log | grep "504"
+Use code with caution.
+2. Once the failing microservice is isolated (e.g., the billing service), check its active containers or server memory footprint.
+3. Perform a rolling restart on that service cluster to clear the memory deadlock:bash
+kubectl rollout restart deployment/billing-service -n production
+Use code with caution.
+4. Confirm gateway traffic health returns to nominal levels by executing a health probe test:bash
+curl -I https://yourcompany.com
+Use code with caution.
+
+[RUN-03] User Authentication & JWT Failures
+
+
+Symptoms & Error Alerts
+
+• Users are abruptly logged out of their sessions.
+• Login workflows throwing Signature verification failed or 401 Unauthorized codes.
+• Auth microservice container logs showing Key fetch failed from JWKS endpoint.
+
+Underlying Cause
+
+The authentication gateway cannot pull the active public signing keys from the identity server, or the local token cache has corrupted entries.
+
+Step-by-Step Resolution Path
+
+1. Navigate to the Redis cache dashboard and check memory thresholds.
+2. If the memory is heavily utilized, clear the auth token metadata cache manually:bash
+redis-cli -h auth-cache.internal flushdb
+Use code with caution.
+3. Trigger a manual sync sequence to pull fresh verification keys directly from the central Identity Provider (IdP).
+4. Verify signature processing behaves correctly by attempting a mock login transaction using a test user account.
+
+[RUN-04] Disk Space Alert - Log Rotation Fix
+
+
+Symptoms & Error Alerts
+
+• Server monitoring systems generating high-priority Disk Space Critical: /var/log usage > 95% alerts.
+• Core system processes dropping data packets because they cannot execute file-write operations.
+
+Underlying Cause
+
+The system log-rotation utility (logrotate) has hung up or crashed, allowing application debug logs to build up indefinitely on the server.
+
+Step-by-Step Resolution Path
+
+1. Securely SSH into the impacted host server machine.
+2. Verify exactly which directories are consuming disk space by executing:bash
+df -h && du -sh /var/log/* | sort -rh | head -5
+Use code with caution.
+3. If massive .log files are found, compress or clear the contents of inactive old logs. Do not delete active file descriptors. Use truncation:bash
+truncate -s 0 /var/log/nginx/error.log.1
+Use code with caution.
+4. Restart the log rotation service daemon to ensure the automation schedule processes upcoming files properly:bash
+systemctl restart logrotate
